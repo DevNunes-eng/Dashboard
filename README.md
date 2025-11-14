@@ -1,5 +1,3 @@
-
-
 \# Dashboard
 
 
@@ -12,11 +10,7 @@
 
 \- Alterar Scroll
 
-
-
-
-
-
+\- Ver quais outras visualizações colocar
 
 
 
