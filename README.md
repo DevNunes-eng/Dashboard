@@ -1,20 +1,20 @@
 
 
-\# Dashboard
+# Dashboard
 
 
 
 📚 Coisas a fazer
 
-\- Mexer no CSS
+- Mexer no CSS
 
-\- Ler a API
+- Ler a API
 
-\- Alterar Scroll
+- Alterar Scroll
 
-\- Ver quais outras visualizações colocar
+- Ver quais outras visualizações colocar
 
-\- teste
+- teste
 
 
 
