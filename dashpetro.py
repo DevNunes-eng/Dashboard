@@ -128,7 +128,7 @@ else:
 # ===============================
 # LAYOUT DO DASHBOARD PRINCIPAL
 # ===============================
-st.markdown("### PAGDIG | DESEMBOLSO COMUNITÁRIO")
+st.markdown("### DESEMBOLSO COMUNITÁRIO")
 
 # --- ESTRUTURA PRINCIPAL DO LAYOUT ---
 col_esquerda, col_direita = st.columns([1.5, 2])
