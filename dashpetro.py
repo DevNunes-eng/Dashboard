@@ -1,8 +1,55 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import numpy as np
-from datetime import datetime
+import os
+from dotenv import load_dotenv
+import requests
+
+# Carrega variáveis do .env
+load_dotenv()
+
+# CARREGAMENTO DO TOKEN
+try:
+    # Tenta pegar dos Secrets do Streamlit (Prioridade para Cloud)
+    TOKEN = st.secrets["CLIENT_TOKEN"]
+except Exception:
+    # Se falhar (ambiente local sem secrets.toml), pega do .env
+    TOKEN = os.getenv("CLIENT_TOKEN")
+
+if not TOKEN:
+    st.error("Erro Crítico: Token não encontrado. Verifique se o CLIENT_TOKEN está no .env ou nos Secrets.")
+    st.stop()
+
+# Constantes de Configuração
+API_BASE_URL = "https://api.edinheiro.dev/datahub"
+HEADERS = {"Client-Token": TOKEN}
+
+# Mapeamentos Estáticos (Movidos para escopo global para performance/leitura)
+MAPA_ESTADO_UF = {
+    "ACRE": "AC", "ALAGOAS": "AL", "AMAPA": "AP", "AMAPÁ": "AP", "AMAZONAS": "AM",
+    "BAHIA": "BA", "CEARA": "CE", "CEARÁ": "CE", "DISTRITO FEDERAL": "DF",
+    "ESPIRITO SANTO": "ES", "ESPÍRITO SANTO": "ES", "GOIAS": "GO", "GOIÁS": "GO",
+    "MARANHAO": "MA", "MARANHÃO": "MA", "MATO GROSSO": "MT", "MATO GROSSO DO SUL": "MS",
+    "MINAS GERAIS": "MG", "PARA": "PA", "PARÁ": "PA", "PARAIBA": "PB", "PARAÍBA": "PB",
+    "PARANA": "PR", "PARANÁ": "PR", "PERNAMBUCO": "PE", "PIAUI": "PI", "PIAUÍ": "PI",
+    "RIO DE JANEIRO": "RJ", "RIO GRANDE DO NORTE": "RN", "RIO GRANDE DO SUL": "RS",
+    "RONDONIA": "RO", "RONDÔNIA": "RO", "RORAIMA": "RR", "SANTA CATARINA": "SC",
+    "SAO PAULO": "SP", "SÃO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO"
+}
+
+COORDENADAS_UF = {
+    "AC": (-9.9754, -67.8249), "AL": (-9.5713, -36.7820), "AP": (0.9020, -52.0030),
+    "AM": (-3.4168, -65.8561), "BA": (-12.5797, -41.7007), "CE": (-5.4984, -39.3206),
+    "DF": (-15.7998, -47.8645), "ES": (-19.1834, -40.3089), "GO": (-15.9340, -49.8270),
+    "MA": (-4.9609, -45.2744), "MT": (-12.6819, -56.9211), "MS": (-20.7722, -54.7863),
+    "MG": (-18.5122, -44.5550), "PA": (-1.9981, -54.9306), "PB": (-7.2399, -36.7819),
+    "PR": (-25.2521, -52.0215), "PE": (-8.8137, -36.9541), "PI": (-7.7183, -42.7289),
+    "RJ": (-22.9099, -43.1729), "RN": (-5.4026, -36.9541), "RS": (-30.0346, -51.2177),
+    "RO": (-11.5057, -63.5806), "RR": (2.7376, -62.0751), "SC": (-27.2423, -50.2189),
+    "SP": (-23.5505, -46.6333), "SE": (-10.5741, -37.3857), "TO": (-10.1753, -48.2982)
+}
 
 # ===============================
 # CONFIGURAÇÃO DA PÁGINA
@@ -13,193 +60,301 @@ st.set_page_config(
     layout="wide"
 )
 
-
-css_final = """
+# CSS Otimizado
+st.markdown("""
 <style>
-    /* 1. Força o layout a usar 100% da largura da tela */
-    .main .block-container {
-        max-width: 100%;
-        padding-left: 2rem;
-        padding-right: 2rem;
-        padding-top: 1rem;
-    }
-    /* 2. Centraliza o título principal */
-    h3 {
-        text-align: center;
-        font-size: 2rem !important;
-    }
-    /* 3. Ajusta a fonte dos KPIs para um tamanho legível */
-    [data-testid="stMetricValue"] {
-        font-size: 1.8rem;
-    }
-    [data-testid="stMetricLabel"] p {
-        font-size: 1rem;
-        white-space: normal !important;
-        overflow-wrap: break-word;
-    }
+    .main .block-container { max-width: 100%; padding: 1rem 2rem; }
+    [data-testid="stMetricValue"] { font-size: 1.6rem; }
+    [data-testid="stMetricLabel"] p { font-size: 0.9rem; font-weight: 600; }
+    h3 { text-align: center; margin-bottom: 2rem; }
 </style>
-"""
-st.markdown(css_final, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
+# ===============================
+# 2. FUNÇÕES AUXILIARES
+# ===============================
+
+def formatar_moeda(valor, prefixo="R$"):
+    """Formata valores para Mi (Milhões) ou k (Milhares) de forma consistente."""
+    if valor >= 1_000_000:
+        return f"{prefixo} {valor/1_000_000:.2f} Mi"
+    elif valor >= 1_000:
+        return f"{prefixo} {valor/1_000:.2f} k"
+    return f"{prefixo} {valor:.2f}"
+
+@st.cache_data(ttl=3600)
+def fetch_data(endpoint: str):
+    """Busca dados na API com tratamento de timeout e erro."""
+    url = f"{API_BASE_URL}{endpoint}"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=30)  
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.Timeout:
+        st.warning(f"A API demorou demais para responder em {endpoint}. Tente novamente mais tarde.")
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erro ao conectar com a API ({endpoint}): {e}")
+        return None
+
+def obter_lat_lon(estado):
+    """Retorna lat/lon baseada na sigla ou nome do estado."""
+    if not estado or pd.isna(estado): return 0, 0
+    
+    estado_upper = str(estado).strip().upper()
+    uf = estado_upper if len(estado_upper) == 2 else MAPA_ESTADO_UF.get(estado_upper)
+    
+    # Retorna coordenadas base do estado + pequeno jitter determinístico (baseado no hash do nome) 
+    # para evitar sobreposição exata sem usar random (que muda a cada refresh)
+    base = COORDENADAS_UF.get(uf, (0, 0))
+    if base == (0,0): return base
+    
+    # Opcional: Se quiser espalhar os pontos, usar hash do nome do banco
+    return base
+
+# ===============================
+# 3. PROCESSAMENTO DE DADOS
+# ===============================
 
 @st.cache_data
-def carregar_dados_reais(caminho_arquivo="bancos_com_dados.xlsx"):
-    try:
-        df = pd.read_excel(caminho_arquivo, sheet_name="DADOS REAIS")
-        df.columns = df.columns.str.strip()
-        df['data'] = pd.to_datetime(df['data'])
-        
-        colunas_numericas = [
-            'CRÉDITO TOTAL', 'Saques', 'Moeda social em circulação', 
-            'VALOR GASTO NO COMÉRCIO LOCAL', 'PAGAMENTO DE BOLETOS/CONVÊNIOS',
-            'Número de pessoas beneficiadas pelo legado', 'Uso do legado em Microcrédito',
-            'Uso do legado em Projetos Sociais', 'NÚMERO DE COMÉRCIOS CREDENCIADOS ATIVOS',
-            'NÚMERO DE COMÉRCIOS COM VENDA', 'GRAU DE CONFIANÇA NA MOEDA'
-        ]
-        for col in colunas_numericas:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+def carregar_dados():
+    data = fetch_data("/metrics")
+    if not data: return pd.DataFrame()
 
-        coordenadas = {
-            "BA": (-12.9777, -38.5016), "RJ": (-22.9068, -43.1729), 
-            "SP": (-23.5505, -46.6333), "MG": (-19.9167, -43.9345),
-            "PE": (-8.0476, -34.8770), "CE": (-3.7172, -38.5433),
-            "AM": (-3.1190, -60.0217), "PA": (-1.4558, -48.5024),
-            "GO": (-16.6869, -49.2648), "RS": (-30.0346, -51.2177),
-            "SC": (-27.5954, -48.5480), "PR": (-25.4284, -49.2733)
-        }
-        df['Latitude'] = df['Estado'].map(lambda uf: coordenadas.get(str(uf).upper(), (0,0))[0] + np.random.normal(0, 0.1))
-        df['Longitude'] = df['Estado'].map(lambda uf: coordenadas.get(str(uf).upper(), (0,0))[1] + np.random.normal(0, 0.1))
+    # Normaliza JSON (seja dict com chave 'metrics' ou lista direta)
+    lista_metrics = data.get("metrics", []) if isinstance(data, dict) else data
+    
+    df = pd.DataFrame(lista_metrics)
+    if df.empty: return df
 
-        return df
-    except Exception as e:
-        st.error(f"Ocorreu um erro crítico ao carregar os dados: {e}")
-        return pd.DataFrame()
+    # Normalização de Nomes de Colunas (Strip + Upper)
+    df.columns = df.columns.str.strip().str.upper()
 
-# Carregar os dados
-df = carregar_dados_reais()
+    # Mapa de Renomeação (De -> Para)
+    rename_map = {
+        "MUNICIPIO": "Município", "ESTADO": "Estado", "DATA": "data",
+        "BANCO_COMUNITARIO": "Banco Comunitário", "CEP": "CEP",
+        "MOEDA_SOCIAL_EM_CIRCULACAO": "Moeda Circulação",
+        "SAQUES": "Saques",
+        "VALOR_GASTO_NO_COMERCIO_LOCAL": "Gasto Comércio Local",
+        "VALOR_MOVIMENTADO_POR_BOLETOS": "Pgto Boletos",
+        "NUMERO_DE_COMERCIOS_CREDENCIADOS_ATIVOS": "Comércios Ativos",
+        "TOTAL_DE_CONTAS_ATIVAS": "Beneficiados",
+        "TOTAL_EMITIDO": "Total Emitido",
+        "Uso do legado em Microcrédito": "Microcrédito" # Caso venha da API
+    }
+    df.rename(columns=rename_map, inplace=True)
+
+    # Garante colunas essenciais com valor 0 se não existirem
+    cols_numericas = [
+        "Total Emitido", "Saques", "Moeda Circulação", "Gasto Comércio Local", 
+        "Pgto Boletos", "Beneficiados", "Comércios Ativos", "Microcrédito"
+    ]
+    for col in cols_numericas:
+        if col not in df.columns: df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Criação de Colunas Calculadas
+    df['CRÉDITO TOTAL'] = df['Total Emitido'] # Assumindo equivalência
+    df['Confiança Moeda'] = np.where(df['Saques'] == 0, 0, df['Moeda Circulação'] / df['Saques'])
+    
+    # Tratamento de Data
+    if 'data' in df.columns:
+        df['data'] = pd.to_datetime(df['data'], format='%Y-%m', errors='coerce')
+    
+    # Tratamento Geográfico
+    if 'Estado' in df.columns:
+        # Aplica a função de coordenadas
+        coords = df['Estado'].apply(obter_lat_lon)
+        df['Latitude'] = coords.apply(lambda x: x[0])
+        df['Longitude'] = coords.apply(lambda x: x[1])
+
+        # Adiciona um pequeno "jitter" (ruído) apenas para visualização, 
+        # para que múltiplos bancos na mesma cidade não fiquem exatamente um em cima do outro
+        # Usando hash para ser determinístico (sempre o mesmo lugar)
+        df['Latitude'] += df.index * 0.0001
+        df['Longitude'] += df.index * 0.0001
+
+    return df
+
+# ===============================
+# 4. APLICAÇÃO (DASHBOARD)
+# ===============================
+
+df = carregar_dados()
 
 if df.empty:
+    st.warning("Nenhum dado disponível para exibição.")
     st.stop()
 
-# ===============================
-# SIDEBAR COM FILTROS EM CASCATA
-# ===============================
+# --- SIDEBAR (FILTROS) ---
 with st.sidebar:
-    
     st.title("Filtros")
-
-    min_data = df['data'].min().date()
-    max_data = df['data'].max().date()
-    data_inicio = st.date_input("Data Início", min_data, min_value=min_data, max_value=max_data)
-    data_fim = st.date_input("Data Fim", max_data, min_value=min_data, max_value=max_data)
-
-    df_periodo_filtrado = df[
-        (df['data'].dt.date >= data_inicio) &
-        (df['data'].dt.date <= data_fim)
-    ]
-
-    estados_disponiveis = ["Todos"] + sorted(list(df_periodo_filtrado["Estado"].unique()))
-    estado_selecionado = st.selectbox("Estado", estados_disponiveis)
-
-    if estado_selecionado == "Todos":
-        df_estado_filtrado = df_periodo_filtrado
-    else:
-        df_estado_filtrado = df_periodo_filtrado[df_periodo_filtrado["Estado"] == estado_selecionado]
     
-    municipios_disponiveis = ["Todos"] + sorted(list(df_estado_filtrado["Município"].unique()))
-    municipio_selecionado = st.selectbox("Município", municipios_disponiveis)
+    # Datas
+    min_d, max_d = df['data'].min().date(), df['data'].max().date()
+    d_inicio = st.date_input("Início", min_d, min_value=min_d, max_value=max_d)
+    d_fim = st.date_input("Fim", max_d, min_value=min_d, max_value=max_d)
+    
+    mask_data = (df['data'].dt.date >= d_inicio) & (df['data'].dt.date <= d_fim)
+    df_f = df[mask_data]
 
-    if municipio_selecionado == "Todos":
-        df_municipio_filtrado = df_estado_filtrado
-    else:
-        df_municipio_filtrado = df_estado_filtrado[df_estado_filtrado["Município"] == municipio_selecionado]
-        
-    bancos_disponiveis = ["Todos"] + sorted(list(df_municipio_filtrado["Banco Comunitário"].unique()))
-    banco_selecionado = st.selectbox("Banco Comunitário", bancos_disponiveis)
+    # Filtros Hierárquicos (Estado -> Município -> Banco)
+    def criar_filtro(label, coluna, dataframe):
+        opcoes = ["Todos"] + sorted(dataframe[coluna].unique().astype(str))
+        selecao = st.selectbox(label, opcoes)
+        return dataframe if selecao == "Todos" else dataframe[dataframe[coluna] == selecao]
+
+    df_f = criar_filtro("Estado", "Estado", df_f)
+    df_f = criar_filtro("Município", "Município", df_f)
+    df_f = criar_filtro("Banco Comunitário", "Banco Comunitário", df_f)
+
 
 # ===============================
-# APLICAÇÃO FINAL DO FILTRO
+# 4. LAYOUT PRINCIPAL
 # ===============================
-if banco_selecionado == "Todos":
-    df_filtrado = df_municipio_filtrado
+
+st.markdown("### PAGDIG | DESEMBOLSO COMUNITÁRIO")
+
+# ---------- KPIs (agregados) ----------
+if df_f.empty:
+    total_investido = beneficiados = confianca_moeda = 0
+    gasto_comercio = moeda_circ = saques_totais = microcredito = comercios_ativos = 0
 else:
-    df_filtrado = df_municipio_filtrado[df_municipio_filtrado["Banco Comunitário"] == banco_selecionado]
+    total_investido = df_f["CRÉDITO TOTAL"].sum()
+    beneficiados = df_f["Beneficiados"].sum()
+    confianca_moeda = df_f["Confiança Moeda"].mean()
+    gasto_comercio = df_f["Gasto Comércio Local"].sum()
+    moeda_circ = df_f["Moeda Circulação"].sum()
+    saques_totais = df_f["Saques"].sum()
+    microcredito = df_f["Microcrédito"].sum() if "Microcrédito" in df_f.columns else 0
+    comercios_ativos = df_f["Comércios Ativos"].sum()
 
-# ===============================
-# LAYOUT DO DASHBOARD PRINCIPAL
-# ===============================
-st.markdown("### DESEMBOLSO COMUNITÁRIO")
+# ======================================
+# LINHA 1 – BARRAS (ESQ) + KPIs (DIR)
+# ======================================
+linha1_esq, linha1_dir = st.columns([1.5, 2], gap="medium")
 
-# --- ESTRUTURA PRINCIPAL DO LAYOUT ---
-col_esquerda, col_direita = st.columns([1.5, 2])
-
-# --- CONTEÚDO DA COLUNA ESQUERDA ---
-with col_esquerda:
-    st.subheader("Crédito por Banco Comunitário")
-    if not df_filtrado.empty:
-        credito_por_banco = df_filtrado.groupby('Banco Comunitário')['CRÉDITO TOTAL'].sum().sort_values(ascending=True).reset_index()
-        fig_iniciativa = px.bar(
-            credito_por_banco, x='CRÉDITO TOTAL', y='Banco Comunitário', orientation='h',
-            text=credito_por_banco['CRÉDITO TOTAL'].apply(lambda x: f'R$ {x/1_000_000:.2f} Mi'),
-            color_discrete_sequence=px.colors.qualitative.Pastel
+# ---- Coluna Esquerda: Top 15 Crédito por Banco ----
+with linha1_esq:
+    st.subheader("Crédito por Banco Comunitário (Top 15)")
+    if not df_f.empty:
+        df_bar = (
+            df_f.groupby("Banco Comunitário", as_index=False)["CRÉDITO TOTAL"]
+            .sum()
+            .nlargest(15, "CRÉDITO TOTAL")
+            .sort_values("CRÉDITO TOTAL")
         )
-        fig_iniciativa.update_layout(showlegend=False, yaxis_title=None, xaxis_title=None, height=300, margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig_iniciativa, use_container_width=True)
+
+        fig_bar = px.bar(
+            df_bar,
+            x="CRÉDITO TOTAL",
+            y="Banco Comunitário",
+            orientation="h",
+            text=df_bar["CRÉDITO TOTAL"].apply(lambda x: formatar_moeda(x)),
+            color_discrete_sequence=px.colors.qualitative.Pastel,
+        )
+        fig_bar.update_layout(
+            xaxis_title=None,
+            yaxis_title=None,
+            height=320,
+            showlegend=False,
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+        fig_bar.update_yaxes(automargin=True)
+        st.plotly_chart(fig_bar, use_container_width=True)
     else:
         st.info("Sem dados para exibir.")
 
-    st.subheader("Localização dos Projetos")
-    if not df_filtrado.empty:
-        fig_mapa = px.scatter_mapbox(
-            df_filtrado, lat="Latitude", lon="Longitude", size="CRÉDITO TOTAL", color="Banco Comunitário",
-            hover_name="Município", hover_data={"CRÉDITO TOTAL": ":.2f"},
-            mapbox_style="open-street-map", zoom=3.5, center={"lat": -14.2350, "lon": -51.9253}, height=320
-        )
-        fig_mapa.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig_mapa, use_container_width=True)
-    else:
-        st.info("Sem dados para exibir.")
-
-# --- CONTEÚDO DA COLUNA DIREITA ---
-with col_direita:
-    # --- KPIs ---
-    if not df_filtrado.empty:
-        total_investido = df_filtrado['CRÉDITO TOTAL'].sum()
-        beneficiados = df_filtrado['Número de pessoas beneficiadas pelo legado'].sum()
-        confianca_moeda_media = df_filtrado['GRAU DE CONFIANÇA NA MOEDA'].mean()
-        gasto_comercio_local = df_filtrado['VALOR GASTO NO COMÉRCIO LOCAL'].sum()
-        moeda_circulacao = df_filtrado['Moeda social em circulação'].sum()
-        total_saques = df_filtrado['Saques'].sum()
-        legado_microcredito = df_filtrado['Uso do legado em Microcrédito'].sum()
-        comercios_ativos = df_filtrado['NÚMERO DE COMÉRCIOS CREDENCIADOS ATIVOS'].sum()
-    else:
-        total_investido = beneficiados = confianca_moeda_media = gasto_comercio_local = 0
-        moeda_circulacao = total_saques = legado_microcredito = comercios_ativos = 0
-
-    # --- MUDANÇA ESTRUTURAL DEFINITIVA: 2 COLUNAS PARA OS KPIs ---
+# ---- Coluna Direita: KPIs (voltar ao estilo antigo, 2 colunas) ----
+with linha1_dir:
     with st.container(border=True):
-        kpi_col1, kpi_col2 = st.columns(2)
-        with kpi_col1:
-            kpi_col1.metric("Confiança na Moeda (Média)", f"{confianca_moeda_media:.2f}")
-            kpi_col1.metric("Uso em Microcrédito", f"R$ {legado_microcredito/1000:.2f} k")
-            kpi_col1.metric("Total Investido (Crédito)", f"R$ {total_investido/1_000_000:.2f} Mi")
-            kpi_col1.metric("Gasto no Comércio Local", f"R$ {gasto_comercio_local/1_000_000:.2f} Mi")
-        with kpi_col2:
-            kpi_col2.metric("Comércios Credenciados Ativos", f"{comercios_ativos:,}")
-            kpi_col2.metric("Beneficiados pelo Legado", f"{int(beneficiados)}")
-            kpi_col2.metric("Moeda Social Circulação", f"R$ {moeda_circulacao/1_000_000:.2f} Mi")
-            kpi_col2.metric("Saques", f"R$ {total_saques/1_000_000:.2f} Mi")
-    
-    # --- Gráfico de Evolução no Tempo ---
-    st.subheader("Fundo Gerado no Período | Por Moeda")
-    if not df_filtrado.empty:
-        df_data = df_filtrado.groupby([pd.Grouper(key='data', freq='ME'), 'Banco Comunitário'])['Moeda social em circulação'].sum().reset_index()
-        df_data['data'] = df_data['data'].dt.strftime('%b %Y')
-        fig_data = px.bar(
-            df_data, x='data', y='Moeda social em circulação', color='Banco Comunitário',
-            labels={'Moeda social em circulação': 'Valor Gerado (R$)', 'data': 'Mês', 'Banco Comunitário': 'Moeda'},
+        kpi1, kpi2 = st.columns(2)
+
+        with kpi1:
+            st.metric("Confiança na Moeda (Média)", f"{confianca_moeda:.2f}")
+            st.metric("Uso em Microcrédito", formatar_moeda(microcredito))
+            st.metric("Total Investido (Crédito)", formatar_moeda(total_investido))
+            st.metric("Gasto no Comércio Local", formatar_moeda(gasto_comercio))
+
+        with kpi2:
+            st.metric("Comércios Credenciados Ativos", f"{int(comercios_ativos):,}")
+            st.metric("Beneficiados pelo Legado", f"{int(beneficiados):,}")
+            st.metric("Moeda Social em Circulação", formatar_moeda(moeda_circ))
+            st.metric("Saques", formatar_moeda(saques_totais))
+
+# ======================================
+# LINHA 2 – MAPA (ESQ) + BARRAS TEMPORAIS (DIR)
+# ======================================
+linha2_esq, linha2_dir = st.columns([1.5, 2], gap="medium")
+
+# ---- Coluna Esquerda: Mapa ----
+with linha2_esq:
+    st.subheader("Localização dos Projetos")
+    if not df_f.empty and "Latitude" in df_f.columns:
+        fig_map = px.scatter_mapbox(
+            df_f,
+            lat="Latitude",
+            lon="Longitude",
+            color="Banco Comunitário",
+            hover_name="Município",
+            hover_data={
+                "Estado": True,
+                "CRÉDITO TOTAL": ":.2f",
+                "Latitude": False,
+                "Longitude": False,
+            },
+            zoom=3.3,
+            mapbox_style="open-street-map",
+            height=320,
         )
-        fig_data.update_layout(yaxis_title=None, xaxis_title=None, height=350, legend_title_text='')
+
+        fig_map.update_layout(
+            margin={"r":0, "t":0, "l":0, "b":0},
+            legend=dict(
+            orientation="h",
+            y=-0.1,      # legenda embaixo
+            x=0.5,
+            xanchor="center"
+            ),
+        )
+
+        st.plotly_chart(fig_map, use_container_width=True)
+    else:
+        st.info("Sem dados para exibir no mapa.")
+
+
+# ---- Coluna Direita: Fundo Gerado por Moeda  ----
+with linha2_dir:
+    st.subheader("Fundo Gerado no Período | Por Moeda")
+
+    df_time = (
+        df_f.groupby([pd.Grouper(key="data", freq="ME"), "Banco Comunitário"])["Moeda Circulação"]
+        .sum()
+        .reset_index()
+    )
+
+    if not df_time.empty:
+        df_time["MesStr"] = df_time["data"].dt.strftime("%b %Y")
+
+        fig_data = px.bar(
+            df_time,
+            x="MesStr",
+            y="Moeda Circulação",
+            color="Banco Comunitário",
+            labels={
+                "Moeda Circulação": "Valor Gerado (R$)",
+                "MesStr": "Mês",
+                "Banco Comunitário": "Moeda",
+            },
+        )
+        fig_data.update_layout(
+            yaxis_title=None,
+            xaxis_title=None,
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=320,
+            legend_title_text="",
+        )
         st.plotly_chart(fig_data, use_container_width=True)
     else:
         st.info("Sem dados para exibir.")

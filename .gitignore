@@ -1,0 +1,12 @@
+# Ambientes Virtuais
+.venv/
+.venv_311/
+venv/
+env/
+
+# Arquivos de ambiente 
+.env
+
+# Arquivos compilados do Python e cache
+__pycache__/
+*.pyc
