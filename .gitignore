@@ -1,3 +1,5 @@
+.DS_Store
+
 # Ambientes Virtuais
 .venv/
 .venv_311/
