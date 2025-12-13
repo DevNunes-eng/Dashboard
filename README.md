@@ -39,9 +39,7 @@ Dependências principais (veja `requirements.txt`):
 - plotly
 - numpy
 - openpyxl
-- folium
-- streamlit-folium
-- geopandas (opcional para análises geoespaciais avançadas)
+
 
 Instale todas as dependências com:
 
@@ -106,7 +104,6 @@ Contribuições são bem-vindas. Para contribuir:
 2. Faça um fork do repositório e crie uma branch com a sua feature: `git checkout -b feature/nome-da-feature`.
 3. Envie um pull request descrevendo as mudanças.
 
-Siga o padrão de estilo e mantenha o código documentado.
 
 ## Badges, CI e futuras melhorias
 
