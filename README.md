@@ -1,4 +1,4 @@
-# 📊 Dashboard de Moedas Sociais – Edinheiro / PagDig
+# 📊 Dashboard de Moedas Sociais – Edinheiro
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Framework-orange)
@@ -196,3 +196,4 @@ Contribuições são bem-vindas. Para contribuir:
 
 ## Licença
 Este projeto está sob a licença MIT.
+
